@@ -1,10 +1,7 @@
 "use client"
 
 import { useState, useEffect } from 'react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Slider } from '@/components/ui/slider'
-import { Checkbox } from '@/components/ui/checkbox'
+
 import { ChevronDown, Search, X } from 'lucide-react'
 
 interface FilterState {
