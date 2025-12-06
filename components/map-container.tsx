@@ -1,113 +1,98 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { MapLayerToggle } from "@/components/map-layer-toggle"
-import { useLocations } from "@/hooks/use-locations"
-import { Spinner } from "@/components/ui/spinner"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { AlertTriangle } from "lucide-react"
+import React, { useEffect, useRef, useState } from 'react'
+import mapboxgl from 'mapbox-gl'
+import 'mapbox-gl/dist/mapbox-gl.css'
+import Supercluster from 'supercluster'
+
+interface Location {
+  id: string
+  name: string
+  latitude: number
+  longitude: number
+  region: string
+  type: string
+  elevation?: number
+  description?: string
+}
 
 interface MapContainerProps {
-  selectedLocationId: string | null
-  filters: any
-  onLocationSelect: (id: string) => void
+  locations: Location[]
+  selectedLocation: Location | null
+  onLocationSelect: (location: Location) => void
+  mapStyle?: 'terrain' | 'satellite' | 'light' | 'dark'
 }
 
 const locationTypeColors: Record<string, string> = {
-  Valley: "#5c9e6f",
-  Peak: "#e74c3c",
-  Village: "#f39c12",
-  "Archaeological Site": "#3498db",
-  Lake: "#2980b9",
-  Pass: "#95a5a6",
+  Valley: '#5c9e6f',
+  Peak: '#e74c3c',
+  Village: '#f39c12',
+  'Archaeological Site': '#3498db',
+  Lake: '#2980b9',
+  Pass: '#95a5a6',
 }
 
-const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ""
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ''
 
-export function MapContainer({ selectedLocationId, filters, onLocationSelect }: MapContainerProps) {
+export function MapContainer({ locations, selectedLocation, onLocationSelect, mapStyle = 'terrain' }: MapContainerProps) {
   const mapContainer = useRef<HTMLDivElement>(null)
-  const map = useRef<any>(null)
-  const markers = useRef<Map<string, any>>(new Map())
-  const [mapStyle, setMapStyle] = useState("terrain")
+  const map = useRef<mapboxgl.Map | null>(null)
+  const markersRef = useRef<{ [key: string]: mapboxgl.Marker }>({})
+  const clusterMarkersRef = useRef<mapboxgl.Marker[]>([])
   const [mapReady, setMapReady] = useState(false)
-  const [mapError, setMapError] = useState<string | null>(null)
-  const [isInitializing, setIsInitializing] = useState(true)
-  const mapboxgl = useRef<any>(null)
-
-  const { locations, loading } = useLocations({
-    filters: {
-      region: filters.region || undefined,
-      type: filters.locationType || undefined,
-      significance: filters.significance || undefined,
-      minElevation: filters.elevationMin,
-      maxElevation: filters.elevationMax,
-      languages: filters.languages?.length > 0 ? filters.languages : undefined,
-    },
-  })
+  const superclusterRef = useRef<Supercluster | null>(null)
+  const hoveredPopup = useRef<mapboxgl.Popup | null>(null)
 
   useEffect(() => {
     if (!mapContainer.current || map.current) return
 
-    const initMap = async () => {
-      setIsInitializing(true)
-      setMapError(null)
-
-      try {
-        if (!MAPBOX_TOKEN) {
-          setMapError("Mapbox token is not configured.")
-          setIsInitializing(false)
-          return
-        }
-
-        // Dynamically import mapbox-gl
-        const mapboxModule = await import("mapbox-gl")
-        const mapboxGl = mapboxModule.default || mapboxModule
-        mapboxgl.current = mapboxGl
-
-        // Set the access token
-        mapboxGl.accessToken = MAPBOX_TOKEN
-
-        // Define map styles
-        const mapStyles: Record<string, string> = {
-          terrain: "mapbox://styles/mapbox/outdoors-v12",
-          satellite: "mapbox://styles/mapbox/satellite-streets-v12",
-          light: "mapbox://styles/mapbox/light-v11",
-          dark: "mapbox://styles/mapbox/dark-v11",
-        }
-
-        // Create the map instance
-        map.current = new mapboxGl.Map({
-          container: mapContainer.current!,
-          style: mapStyles[mapStyle],
-          center: [84.0, 28.5],
-          zoom: 6,
-          pitch: 0,
-        })
-
-        // Set up event handlers
-        map.current.on("load", () => {
-          map.current.addControl(new mapboxGl.NavigationControl(), "top-right")
-          map.current.addControl(new mapboxGl.FullscreenControl(), "top-right")
-          setMapReady(true)
-          setIsInitializing(false)
-        })
-
-        map.current.on("error", (e: any) => {
-          console.error("[v0] Mapbox runtime error:", e.error?.message || e)
-          if (e.error?.message?.includes("access token")) {
-            setMapError("Invalid Mapbox access token.")
-          }
-        })
-      } catch (error) {
-        console.error("[v0] Error initializing map:", error)
-        setMapError(
-          error instanceof Error ? `Map initialization failed: ${error.message}` : "Failed to initialize Mapbox GL.",
-        )
-        setIsInitializing(false)
-      }
+    if (!MAPBOX_TOKEN) {
+      console.error('Mapbox token not found')
+      return
     }
 
-    initMap()
+    mapboxgl.accessToken = MAPBOX_TOKEN
+
+    const mapStyles: Record<string, string> = {
+      terrain: 'mapbox://styles/mapbox/outdoors-v12',
+      satellite: 'mapbox://styles/mapbox/satellite-streets-v12',
+      light: 'mapbox://styles/mapbox/light-v11',
+      dark: 'mapbox://styles/mapbox/dark-v11',
+    }
+
+    map.current = new mapboxgl.Map({
+      container: mapContainer.current,
+      style: mapStyles[mapStyle],
+      center: [84, 28],
+      zoom: 5,
+      pitch: 45,
+    })
+
+    map.current.on('load', () => {
+      if (!map.current) return
+
+      map.current.addSource('mapbox-dem', {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.terrain-rgb',
+        tileSize: 512,
+        maxzoom: 14,
+      })
+
+      map.current.setTerrain({ source: 'mapbox-dem', exaggeration: 1.5 })
+
+      map.current.addControl(new mapboxgl.NavigationControl(), 'top-right')
+      map.current.addControl(new mapboxgl.FullscreenControl(), 'top-right')
+      map.current.addControl(
+        new mapboxgl.GeolocateControl({
+          positionOptions: { enableHighAccuracy: true },
+          trackUserLocation: true,
+          showUserHeading: true,
+        }),
+        'top-right'
+      )
+
+      setMapReady(true)
+    })
 
     return () => {
       if (map.current) {
@@ -121,129 +106,248 @@ export function MapContainer({ selectedLocationId, filters, onLocationSelect }: 
     if (!map.current || !mapReady) return
 
     const mapStyles: Record<string, string> = {
-      terrain: "mapbox://styles/mapbox/outdoors-v12",
-      satellite: "mapbox://styles/mapbox/satellite-streets-v12",
-      light: "mapbox://styles/mapbox/light-v11",
-      dark: "mapbox://styles/mapbox/dark-v11",
+      terrain: 'mapbox://styles/mapbox/outdoors-v12',
+      satellite: 'mapbox://styles/mapbox/satellite-streets-v12',
+      light: 'mapbox://styles/mapbox/light-v11',
+      dark: 'mapbox://styles/mapbox/dark-v11',
     }
 
     map.current.setStyle(mapStyles[mapStyle])
+
+    map.current.once('style.load', () => {
+      if (!map.current) return
+
+      map.current.addSource('mapbox-dem', {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.terrain-rgb',
+        tileSize: 512,
+        maxzoom: 14,
+      })
+
+      map.current.setTerrain({ source: 'mapbox-dem', exaggeration: 1.5 })
+    })
   }, [mapStyle, mapReady])
 
   useEffect(() => {
-    if (!map.current || !mapReady || !mapboxgl.current) return
+    if (!map.current || !mapReady || locations.length === 0) return
 
-    markers.current.forEach((marker) => marker.remove())
-    markers.current.clear()
+    const geojsonData: GeoJSON.FeatureCollection = {
+      type: 'FeatureCollection',
+      features: locations.map(loc => ({
+        type: 'Feature',
+        properties: { id: loc.id },
+        geometry: {
+          type: 'Point',
+          coordinates: [loc.longitude, loc.latitude],
+        },
+      })),
+    }
 
-    locations.forEach((location) => {
-      const color = locationTypeColors[location.type] || "#5c9e6f"
-
-      const markerEl = document.createElement("div")
-      markerEl.className = "marker"
-      markerEl.style.cssText = `
-        width: 32px;
-        height: 32px;
-        background-color: ${color};
-        border: 3px solid white;
-        border-radius: 50%;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        transition: transform 0.2s, box-shadow 0.2s;
-        font-weight: bold;
-        font-size: 12px;
-        color: white;
-      `
-
-      markerEl.addEventListener("mouseenter", () => {
-        if (selectedLocationId !== location.id) {
-          markerEl.style.transform = "scale(1.2)"
-          markerEl.style.boxShadow = "0 4px 12px rgba(0,0,0,0.4)"
-        }
+    if (!map.current.getSource('locations-heatmap')) {
+      map.current.addSource('locations-heatmap', {
+        type: 'geojson',
+        data: geojsonData,
       })
 
-      markerEl.addEventListener("mouseleave", () => {
-        if (selectedLocationId !== location.id) {
-          markerEl.style.transform = "scale(1)"
-          markerEl.style.boxShadow = "0 2px 8px rgba(0,0,0,0.3)"
-        }
+      map.current.addLayer({
+        id: 'locations-heatmap-layer',
+        type: 'heatmap',
+        source: 'locations-heatmap',
+        maxzoom: 9,
+        paint: {
+          'heatmap-weight': 1,
+          'heatmap-intensity': 1,
+          'heatmap-color': [
+            'interpolate',
+            ['linear'],
+            ['heatmap-density'],
+            0, 'rgba(33,102,172,0)',
+            0.2, 'rgb(103,169,207)',
+            0.4, 'rgb(209,229,240)',
+            0.6, 'rgb(253,219,199)',
+            0.8, 'rgb(239,138,98)',
+            1, 'rgb(178,24,43)'
+          ],
+          'heatmap-radius': 30,
+          'heatmap-opacity': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            7, 0.8,
+            9, 0
+          ],
+        },
       })
+    }
 
-      const popup = new mapboxgl.current.Popup({
-        offset: 25,
-        closeButton: false,
-      }).setHTML(`
-        <div class="p-3 bg-card text-card-foreground rounded-lg min-w-max">
-          <h3 class="font-bold text-sm">${location.name}</h3>
-          <p class="text-xs text-muted-foreground">${location.type}</p>
-          <p class="text-xs text-muted-foreground">Elevation: ${location.elevation}m</p>
-        </div>
-      `)
-
-      const marker = new mapboxgl.current.Marker({ element: markerEl })
-        .setLngLat([location.longitude, location.latitude])
-        .setPopup(popup)
-        .addTo(map.current)
-
-      markers.current.set(location.id, marker)
-
-      markerEl.addEventListener("click", () => {
-        onLocationSelect(location.id)
-        markerEl.style.transform = "scale(1.3)"
-        markerEl.style.boxShadow = "0 6px 16px rgba(0,0,0,0.5)"
-
-        map.current.flyTo({
-          center: [location.longitude, location.latitude],
-          zoom: 8,
-          duration: 1000,
-        })
-      })
+    const cluster = new Supercluster({
+      radius: 80,
+      maxZoom: 16,
+      minZoom: 0,
     })
 
-    markers.current.forEach((marker, id) => {
-      if (id !== selectedLocationId) {
-        const el = marker.getElement()
-        el.style.transform = "scale(1)"
-        el.style.boxShadow = "0 2px 8px rgba(0,0,0,0.3)"
+    const points = locations.map(loc => ({
+      type: 'Feature' as const,
+      properties: { ...loc, cluster: false },
+      geometry: {
+        type: 'Point' as const,
+        coordinates: [loc.longitude, loc.latitude] as [number, number],
+      },
+    }))
+
+    cluster.load(points)
+    superclusterRef.current = cluster
+
+    const updateMarkers = () => {
+      if (!map.current || !superclusterRef.current) return
+
+      const bounds = map.current.getBounds()
+      const bbox: [number, number, number, number] = [
+        bounds.getWest(),
+        bounds.getSouth(),
+        bounds.getEast(),
+        bounds.getNorth(),
+      ]
+      const zoom = Math.floor(map.current.getZoom())
+
+      const clusters = superclusterRef.current.getClusters(bbox, zoom)
+
+      Object.values(markersRef.current).forEach(marker => marker.remove())
+      clusterMarkersRef.current.forEach(marker => marker.remove())
+      markersRef.current = {}
+      clusterMarkersRef.current = []
+
+      clusters.forEach((cluster: any) => {
+        const [longitude, latitude] = cluster.geometry.coordinates
+        const { cluster: isCluster, point_count } = cluster.properties
+
+        if (isCluster) {
+          const el = document.createElement('div')
+          el.className = 'cluster-marker'
+          el.style.cssText = `
+            width: 50px;
+            height: 50px;
+            background-color: #3498db;
+            border: 4px solid white;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            transition: transform 0.2s;
+          `
+          el.textContent = point_count.toString()
+
+          const marker = new mapboxgl.Marker(el)
+            .setLngLat([longitude, latitude])
+            .addTo(map.current!)
+
+          el.addEventListener('click', () => {
+            if (!map.current) return
+            const expansionZoom = Math.min(
+              superclusterRef.current!.getClusterExpansionZoom(cluster.id),
+              20
+            )
+            map.current.flyTo({
+              center: [longitude, latitude],
+              zoom: expansionZoom,
+              duration: 1000,
+            })
+          })
+
+          el.addEventListener('mouseenter', () => {
+            el.style.transform = 'scale(1.1)'
+          })
+
+          el.addEventListener('mouseleave', () => {
+            el.style.transform = 'scale(1)'
+          })
+
+          clusterMarkersRef.current.push(marker)
+        } else {
+          const location = cluster.properties as Location
+          const color = locationTypeColors[location.type] || '#5c9e6f'
+
+          const el = document.createElement('div')
+          el.className = 'location-marker'
+          el.style.cssText = `
+            width: 32px;
+            height: 32px;
+            background-color: ${color};
+            border: 3px solid white;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
+            ${selectedLocation?.id === location.id ? 'transform: scale(1.3); box-shadow: 0 6px 16px rgba(0,0,0,0.5);' : ''}
+          `
+
+          const popup = new mapboxgl.Popup({
+            offset: 25,
+            closeButton: false,
+            className: 'hover-popup',
+          }).setHTML(`
+            <div style="padding: 8px; min-width: 150px;">
+              <h3 style="font-weight: bold; font-size: 14px; margin-bottom: 4px;">${location.name}</h3>
+              <p style="font-size: 12px; color: #666; margin: 2px 0;">${location.type}</p>
+              <p style="font-size: 12px; color: #666; margin: 2px 0;">Elevation: ${location.elevation || 'N/A'}m</p>
+              <p style="font-size: 12px; color: #666; margin: 2px 0;">${location.region}</p>
+            </div>
+          `)
+
+          const marker = new mapboxgl.Marker(el)
+            .setLngLat([longitude, latitude])
+            .setPopup(popup)
+            .addTo(map.current!)
+
+          el.addEventListener('mouseenter', () => {
+            if (selectedLocation?.id !== location.id) {
+              el.style.transform = 'scale(1.2)'
+            }
+            hoveredPopup.current = popup
+            popup.addTo(map.current!)
+          })
+
+          el.addEventListener('mouseleave', () => {
+            if (selectedLocation?.id !== location.id) {
+              el.style.transform = 'scale(1)'
+            }
+            popup.remove()
+            hoveredPopup.current = null
+          })
+
+          el.addEventListener('click', () => {
+            onLocationSelect(location)
+            map.current!.flyTo({
+              center: [longitude, latitude],
+              zoom: 10,
+              duration: 1000,
+            })
+          })
+
+          markersRef.current[location.id] = marker
+        }
+      })
+    }
+
+    updateMarkers()
+    map.current.on('zoom', updateMarkers)
+    map.current.on('move', updateMarkers)
+
+    return () => {
+      if (map.current) {
+        map.current.off('zoom', updateMarkers)
+        map.current.off('move', updateMarkers)
       }
-    })
-  }, [locations, selectedLocationId, mapReady, onLocationSelect])
-
-  const handleStyleChange = (newStyle: string) => {
-    setMapStyle(newStyle)
-  }
+    }
+  }, [locations, selectedLocation, mapReady, onLocationSelect])
 
   return (
-    <div className="relative w-full h-full flex-1">
-      <div ref={mapContainer} className="w-full h-full" style={{ minHeight: "100vh" }} />
-
-      {mapError && (
-        <div className="absolute inset-0 bg-background/95 flex items-center justify-center z-20">
-          <Alert variant="destructive" className="max-w-md">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertDescription>
-              <p className="font-semibold mb-2">Map Configuration Required</p>
-              <p>{mapError}</p>
-              <p className="text-xs mt-3">Visit your Vercel project settings to add your Mapbox token.</p>
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
-      {(isInitializing || loading) && !mapError && (
-        <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-20">
-          <Spinner />
-        </div>
-      )}
-
-      {mapReady && (
-        <div className="absolute top-4 right-4 z-30">
-          <MapLayerToggle onStyleChange={handleStyleChange} />
-        </div>
-      )}
+    <div className="relative w-full h-full">
+      <div ref={mapContainer} className="w-full h-full" style={{ minHeight: '100vh' }} />
     </div>
   )
 }
